@@ -208,10 +208,8 @@ export async function fetchEndpointModels(
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     ...(extraHeaders ?? {}),
-  }
-  if (apiKey) {
-    headers["Authorization"] = `Bearer ${apiKey}`
   }
 
   const res = await fetch(modelsUrl.toString(), {
