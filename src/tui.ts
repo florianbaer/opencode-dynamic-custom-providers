@@ -62,7 +62,7 @@ function showSelect<V>(
 }
 
 export const tui: TuiPlugin = async (api: TuiPluginApi) => {
-  api.command.register(() => [
+  api.command?.register(() => [
     {
       title: "Reload Models",
       value: "reload-models",
