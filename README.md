@@ -17,7 +17,7 @@ That's all. The package has a server part, which handles discovery, tools and st
 Install straight from GitHub:
 
 ```bash
-opencode plugin add git+https://github.com/florianbaer/opencode-dynamic-custom-providers.git
+opencode plugin add git+https://github.com/jhabr/opencode-dynamic-custom-providers.git
 ```
 
 Or add it to `opencode.jsonc` by hand:
@@ -131,7 +131,7 @@ Providers that V1's `/add-provider` wrote into `opencode.json` include a static 
 ## Development
 
 ```bash
-git clone https://github.com/florianbaer/opencode-dynamic-custom-providers
+git clone https://github.com/jhabr/opencode-dynamic-custom-providers
 cd opencode-dynamic-custom-providers
 npm install
 npm test
