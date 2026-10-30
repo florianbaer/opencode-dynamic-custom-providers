@@ -1,6 +1,7 @@
+import "./setup.mjs"
 import { test } from "node:test"
 import assert from "node:assert"
-import { isValidUrl, sanitizeModelId, sanitizeErrorMessage, sanitizeUrl } from "../dist/security.js"
+import { isValidUrl, sanitizeModelId, sanitizeErrorMessage, sanitizeUrl } from "../src/security.ts"
 
 test("isValidUrl checks protocols correctly", () => {
   assert.strictEqual(isValidUrl("https://api.openai.com"), true)

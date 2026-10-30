@@ -1,9 +1,9 @@
 import { Plugin } from "@opencode/plugin/tui"
-import type { DisplayStyle } from "./discovery.js"
-import { validateProviderId, type ReloadResult } from "./commands.js"
-import { DynamicProviders } from "./rpc.js"
-import { isValidUrl } from "./security.js"
-import { PLUGIN_ID } from "./types.js"
+import type { DisplayStyle } from "./discovery.ts"
+import { validateProviderId, type ReloadResult } from "./commands.ts"
+import { DynamicProviders } from "./rpc.ts"
+import { isValidUrl } from "./security.ts"
+import { PLUGIN_ID } from "./types.ts"
 
 export default Plugin.define({
   id: `${PLUGIN_ID}.tui`,

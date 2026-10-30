@@ -1,3 +1,4 @@
+import "./setup.mjs"
 import { test } from "node:test"
 import assert from "node:assert"
 import { createServer } from "node:http"
@@ -6,8 +7,8 @@ import {
   managedProviderInfo,
   targetFromProvider,
   toModelInfo,
-} from "../dist/types.js"
-import { reloadAllProviders, validateAddProviderParams } from "../dist/commands.js"
+} from "../src/types.ts"
+import { reloadAllProviders, validateAddProviderParams } from "../src/commands.ts"
 
 test("targetFromProvider reads baseURL, apiKey and headers from V2 provider info", () => {
   const target = targetFromProvider(

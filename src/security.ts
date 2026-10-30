@@ -21,7 +21,7 @@ export function sanitizeUrl(raw: string): string {
     url.search = ""
     return url.toString()
   } catch {
-    return raw.split("?")[0]
+    return raw.split("?")[0] ?? raw
   }
 }
 

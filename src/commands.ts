@@ -1,6 +1,6 @@
-import { discoverAndEnrich, clearModelsDevCache, type DisplayStyle, type EnrichedModel } from "./discovery.js"
-import { isValidUrl, sanitizeErrorMessage } from "./security.js"
-import type { DiscoveryTarget, ManagedProvider } from "./types.js"
+import { discoverAndEnrich, clearModelsDevCache, type DisplayStyle, type EnrichedModel } from "./discovery.ts"
+import { isValidUrl, sanitizeErrorMessage } from "./security.ts"
+import type { DiscoveryTarget, ManagedProvider } from "./types.ts"
 
 export interface ReloadResult {
   totalModels: number
@@ -72,19 +72,9 @@ export async function reloadAllProviders(
 
   if (options.clearCache) clearModelsDevCache()
 
-  const outcomes = await Promise.allSettled(
-    dynamicTargets.map((t) => reloadOneProvider(t, previous.has(t.id))),
-  )
-
-  for (const outcome of outcomes) {
-    if (outcome.status === "rejected") {
-      result.failures++
-      result.errors.push(`Unexpected error: ${sanitizeErrorMessage(outcome.reason)}`)
-      continue
-    }
-
-    const { providerId, models, warning, error } = outcome.value
-
+  // Each outcome is handled as soon as its endpoint answers, so callers see
+  // fast providers without waiting for slow ones.
+  const handle = ({ providerId, models, warning, error }: ProviderReloadOutcome) => {
     if (error) {
       result.failures++
       result.errors.push(error)
@@ -97,6 +87,15 @@ export async function reloadAllProviders(
       result.totalModels += Object.keys(models).length
     }
   }
+
+  await Promise.all(
+    dynamicTargets.map((t) =>
+      reloadOneProvider(t, previous.has(t.id)).then(handle, (reason: unknown) => {
+        result.failures++
+        result.errors.push(`Unexpected error: ${sanitizeErrorMessage(reason)}`)
+      }),
+    ),
+  )
 
   return result
 }

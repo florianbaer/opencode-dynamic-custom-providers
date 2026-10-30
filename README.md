@@ -136,10 +136,19 @@ Providers that V1's `/add-provider` wrote into `opencode.json` include a static 
 git clone https://github.com/jhabr/opencode-dynamic-custom-providers
 cd opencode-dynamic-custom-providers
 npm install
-npm test
+npm run check   # typecheck + tests
 ```
 
-OpenCode loads the TypeScript sources in `src/` directly, so there's no build step. `npm test` compiles to a git-ignored `dist/` just to run the tests.
+There's no build step. OpenCode loads the TypeScript in `src/` directly, and the tests run on the same sources through Node's built-in type stripping (Node 22.18+). The tests are hermetic: models.dev is served from a fixture and nothing is written outside a temporary directory. CI runs `npm run check` on every push and pull request.
+
+| File | Role |
+| --- | --- |
+| `src/server.ts` | Server part: wires the controller, tools and RPC into OpenCode |
+| `src/controller.ts` | Discovery state; reacts to provider/config events and feeds the provider transform |
+| `src/discovery.ts` | `/models` fetching and models.dev enrichment |
+| `src/commands.ts` | Reload and add-provider logic shared by tools, RPC and TUI |
+| `src/tui.ts` | TUI part: `/add-provider` and `/reload-models` |
+| `src/rpc.ts` | RPC contract between the TUI and server parts |
 
 To try a local checkout, add its path to `plugins`:
 

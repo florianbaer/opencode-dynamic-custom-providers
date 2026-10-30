@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as os from "node:os"
 import { createRequire } from "node:module"
-import { isValidUrl, sanitizeModelId, sanitizeErrorMessage } from "./security.js"
+import { isValidUrl, sanitizeModelId, sanitizeErrorMessage } from "./security.ts"
 
 const require = createRequire(import.meta.url)
 const { version: PKG_VERSION } = require("../package.json")

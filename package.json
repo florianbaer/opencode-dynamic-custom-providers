@@ -14,9 +14,10 @@
     "./rpc": "./src/rpc.ts"
   },
   "scripts": {
-    "compile": "tsc",
-    "test": "npm run compile && node --test tests/*.test.mjs",
-    "prepublishOnly": "npm test"
+    "typecheck": "tsc -p .",
+    "test": "node --test tests/*.test.mjs",
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check"
   },
   "keywords": [
     "opencode",

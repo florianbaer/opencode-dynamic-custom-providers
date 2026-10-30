@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `opencode plugin add git+https://…` failed in git dependency preparation; the package now ships its TypeScript sources and has no build script
+- Providers defined in config were never discovered, because config is layered on after plugin transforms; catalog providers were probed instead. Discovery now follows provider/config events, picks up providers added to the config at runtime, and skips catalog providers unless `dynamic: true`
+- Each provider's models now appear as soon as its endpoint answers instead of after the slowest one
+- A config provider without a `package` now gets the openai-compatible package
+
+### Changed
+- Discovery state moved into a testable `DiscoveryController`; the plugin unsubscribes and stops reloading on unload
+- No build step: tests run on the TypeScript sources with Node's type stripping, `tsc` only typechecks (stricter settings incl. `noUncheckedIndexedAccess`)
+- Hermetic test suite with a fake OpenCode host, plus GitHub Actions CI
+
 ## [3.0.0] - 2026-10-30
 
 ### Changed

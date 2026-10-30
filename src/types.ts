@@ -1,6 +1,6 @@
 import type { Model, Provider } from "@opencode/plugin"
-import { isValidUrl } from "./security.js"
-import type { DisplayStyle, EnrichedModel } from "./discovery.js"
+import { isValidUrl } from "./security.ts"
+import type { DisplayStyle, EnrichedModel } from "./discovery.ts"
 
 export const PLUGIN_ID = "opencode-dynamic-custom-providers"
 

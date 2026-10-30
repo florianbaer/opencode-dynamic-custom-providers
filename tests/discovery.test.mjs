@@ -1,6 +1,7 @@
+import "./setup.mjs"
 import { test } from "node:test"
 import assert from "node:assert"
-import { capOutputLimit, normalizeModelId } from "../dist/discovery.js"
+import { capOutputLimit, normalizeModelId } from "../src/discovery.ts"
 
 test("normalizeModelId strips models/ prefix and org prefixes", () => {
   assert.strictEqual(normalizeModelId("gpt-4o"), "gpt-4o")
