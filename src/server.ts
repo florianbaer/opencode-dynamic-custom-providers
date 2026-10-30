@@ -1,177 +1,196 @@
-import type { Plugin } from "@opencode-ai/plugin"
-import { tool } from "@opencode-ai/plugin"
-import { discoverAndEnrich } from "./discovery.js"
-import { sanitizeErrorMessage, sanitizeUrl } from "./security.js"
-import { reloadAllProviders, addProvider, validateAddProviderParams, persistProviderApiKey } from "./commands.js"
-import { shouldDiscover, getApiKey, getHeaders, type ProviderConfig, type OpenCodeConfig } from "./types.js"
+import { Plugin, type Model } from "@opencode/plugin"
+import {
+  reloadAllProviders,
+  formatReloadResult,
+  addProvider,
+  validateAddProviderParams,
+  type AddProviderParams,
+  type AddProviderResult,
+} from "./commands.js"
+import { DynamicProviders } from "./rpc.js"
+import { sanitizeErrorMessage } from "./security.js"
+import {
+  PLUGIN_ID,
+  OPENAI_COMPATIBLE_PACKAGE,
+  managedProviderInfo,
+  targetFromManaged,
+  targetFromProvider,
+  toModelInfos,
+  type DiscoveryTarget,
+  type ManagedProvider,
+  type PluginOptions,
+} from "./types.js"
 
-export const id = "opencode-dynamic-custom-providers"
+export { DynamicProviders } from "./rpc.js"
+export type { ManagedProvider, PluginOptions, ProviderOptions } from "./types.js"
 
-export type { ProviderConfig, OpenCodeConfig } from "./types.js"
-export { getApiKey } from "./types.js"
+const STORAGE_PREFIX = "provider/"
 
-export const server: Plugin = async ({ client }) => {
-  await client.app.log({
-    body: {
-      level: "info",
-      message: "Plugin initialized",
-      service: id,
+const ADD_PROVIDER_INPUT = {
+  type: "object",
+  properties: {
+    providerId: {
+      type: "string",
+      description: "Unique provider ID (alphanumeric, hyphens, underscores only)",
     },
-  })
+    baseURL: {
+      type: "string",
+      description: "Base URL of the OpenAI-compatible API endpoint (e.g. https://api.example.com/v1)",
+    },
+    apiKey: { type: "string", description: "API key for authentication (optional)" },
+    displayStyle: {
+      type: "string",
+      enum: ["slug", "name"],
+      description: "How to display model names: 'slug' for full ID (default), 'name' for friendly name",
+    },
+    overwrite: {
+      type: "boolean",
+      description: "Overwrite if a provider with this ID already exists (default: false)",
+    },
+  },
+  required: ["providerId", "baseURL"],
+  additionalProperties: false,
+} as const
 
-  return {
-    config: async (cfg: OpenCodeConfig) => {
-      if (!cfg.provider) return
+const EMPTY_INPUT = { type: "object", properties: {}, additionalProperties: false } as const
 
-      for (const [providerId, providerConfig] of Object.entries(cfg.provider)) {
-        if (!shouldDiscover(providerConfig)) continue
+export default Plugin.define({
+  id: PLUGIN_ID,
+  async setup(ctx) {
+    const options = (ctx.options ?? {}) as PluginOptions
 
-        const baseURL = providerConfig.options!.baseURL!
-        const apiKey = getApiKey(providerConfig, providerId)
-        const extraHeaders = getHeaders(providerConfig)
+    const managed = new Map<string, ManagedProvider>()
+    let after: string | undefined
+    do {
+      const page = await ctx.storage.scan({ prefix: STORAGE_PREFIX, after })
+      for (const entry of page.entries) {
+        const provider = entry.value as unknown as ManagedProvider
+        if (provider?.id && provider.baseURL) managed.set(provider.id, provider)
+      }
+      after = page.next
+    } while (after)
 
-        try {
-          await client.app.log({
-            body: {
-              level: "info",
-              message: `Discovering models from ${providerId} at ${sanitizeUrl(baseURL)}`,
-              service: id,
-            },
-          })
+    // Discovered models per provider. Transforms must be synchronous, so
+    // discovery runs outside them and calls reload() when it has results.
+    const discovered = new Map<string, Model.Info[]>()
+    // Providers we already tried, so a replayed transform doesn't rediscover.
+    const attempted = new Set<string>()
+    let configTargets: DiscoveryTarget[] = []
 
-          const displayStyle = providerConfig.displayStyle ?? "slug"
-          const models = await discoverAndEnrich(baseURL, apiKey, displayStyle, extraHeaders)
-          const count = Object.keys(models).length
+    const allTargets = (): DiscoveryTarget[] => [
+      ...configTargets,
+      ...[...managed.values()].map(targetFromManaged),
+    ]
 
-          if (count === 0) {
-            await client.app.log({
-              body: {
-                level: "warn",
-                message: `No models discovered from ${providerId}`,
-                service: id,
-              },
-            })
-            continue
-          }
+    const refresh = async (targets: DiscoveryTarget[], clearCache: boolean) => {
+      for (const t of targets) attempted.add(t.id)
+      const result = await reloadAllProviders(
+        targets,
+        discovered,
+        (providerId, models) => discovered.set(providerId, toModelInfos(providerId, models)),
+        { clearCache },
+      )
+      if (result.totalModels > 0) await ctx.provider.reload()
+      for (const e of result.errors) console.warn(`[${PLUGIN_ID}] ${e}`)
+      return result
+    }
 
-          providerConfig.models = { ...(providerConfig.models as Record<string, unknown> ?? {}), ...models }
-          providerConfig.npm = providerConfig.npm ?? "@ai-sdk/openai-compatible"
-          providerConfig.api = providerConfig.api ?? baseURL
+    await ctx.provider.transform((editor) => {
+      const targets: DiscoveryTarget[] = []
+      for (const record of editor.list()) {
+        if (managed.has(record.provider.id)) continue
+        const target = targetFromProvider(record.provider, record.models.size, options)
+        if (target) targets.push(target)
+      }
+      configTargets = targets
 
-          await client.app.log({
-            body: {
-              level: "info",
-              message: `Discovered ${count} model(s) from ${providerId}`,
-              service: id,
-            },
-          })
-        } catch (error) {
-          await client.app.log({
-            body: {
-              level: "warn",
-              message: `Failed to discover models from ${providerId}: ${sanitizeErrorMessage(error)}`,
-              service: id,
-            },
+      for (const provider of managed.values()) {
+        if (editor.get(provider.id)) editor.remove(provider.id)
+        editor.add({ info: managedProviderInfo(provider), models: discovered.get(provider.id) ?? [] })
+      }
+
+      for (const [providerId, models] of discovered) {
+        if (managed.has(providerId)) continue
+        const record = editor.get(providerId)
+        if (!record) continue
+        if (!record.provider.package) {
+          editor.update(providerId, (p) => {
+            p.package = OPENAI_COMPATIBLE_PACKAGE
           })
         }
+        editor.models.set(providerId, models)
       }
-    },
 
-    tool: {
-      "refresh-models": tool({
+      const pending = allTargets().filter((t) => !t.hasModels && !attempted.has(t.id))
+      if (pending.length > 0) {
+        for (const t of pending) attempted.add(t.id)
+        queueMicrotask(() => {
+          refresh(pending, false).catch((error) =>
+            console.warn(`[${PLUGIN_ID}] Discovery failed: ${sanitizeErrorMessage(error)}`),
+          )
+        })
+      }
+    })
+
+    const reloadModels = () => refresh(allTargets(), true)
+
+    const knownProviderIds = () =>
+      new Set([...configTargets.map((t) => t.id), ...managed.keys()])
+
+    const addManagedProvider = async (params: AddProviderParams): Promise<AddProviderResult> => {
+      const providers = await ctx.provider.list()
+      const existing = new Set([...providers.data.map((p) => p.id as string), ...knownProviderIds()])
+      const validationError = validateAddProviderParams(params, existing)
+      if (validationError) return { success: false, modelCount: 0, message: validationError }
+
+      const result = await addProvider(params)
+      if (!result.success || !result.provider || !result.models) return result
+
+      await ctx.storage.set(STORAGE_PREFIX + result.provider.id, result.provider as never)
+      managed.set(result.provider.id, result.provider)
+      attempted.add(result.provider.id)
+      discovered.set(result.provider.id, toModelInfos(result.provider.id, result.models))
+      await ctx.provider.reload()
+      return result
+    }
+
+    await ctx.tool.transform((editor) => {
+      editor.add({
+        name: "refresh-models",
         description:
-          "Re-discover models from all dynamic providers and update the live config. " +
+          "Re-discover models from all dynamic providers and update the live provider list. " +
           "Clears the models.dev metadata cache, fetches /models from every provider " +
-          "with a baseURL, enriches them, and persists the updated config.",
-        args: {},
+          "with a baseURL, and enriches them.",
+        input: EMPTY_INPUT,
         async execute() {
-          const { data: config } = await client.config.get()
-          const providers = (config?.provider as Record<string, ProviderConfig>) ?? {}
-
-          const result = await reloadAllProviders(providers)
-
-          if (result.providerCount === 0) {
-            return "No dynamic providers configured. Add a provider with a baseURL first."
-          }
-
-          if (result.totalModels > 0) {
-            await client.config.update({
-              body: { provider: providers } as never,
-            })
-          }
-
-          const lines: string[] = []
-          if (result.failures === 0) {
-            lines.push(
-              `Reloaded ${result.totalModels} model(s) from ${result.providerCount} provider(s).`,
-            )
-          } else {
-            lines.push(
-              `Reloaded ${result.totalModels} model(s) with ${result.failures} failure(s).`,
-            )
-          }
-          for (const w of result.warnings) lines.push(`Warning: ${w}`)
-          for (const e of result.errors) lines.push(`Error: ${e}`)
-
-          return lines.join("\n")
+          return { content: formatReloadResult(await reloadModels()) }
         },
-      }),
+      })
 
-      "add-provider": tool({
+      editor.add({
+        name: "add-provider",
         description:
           "Add a new OpenAI-compatible provider with dynamic model discovery. " +
           "Validates the endpoint, discovers available models, enriches them with " +
-          "models.dev metadata, and persists the provider to the config.",
-        args: {
-          providerId: tool.schema
-            .string()
-            .describe("Unique provider ID (alphanumeric, hyphens, underscores only)"),
-          baseURL: tool.schema
-            .string()
-            .describe("Base URL of the OpenAI-compatible API endpoint (e.g. https://api.example.com/v1)"),
-          apiKey: tool.schema
-            .string()
-            .optional()
-            .describe("API key for authentication (optional)"),
-          displayStyle: tool.schema
-            .enum(["slug", "name"])
-            .optional()
-            .describe("How to display model names: 'slug' for full ID (default), 'name' for friendly name"),
-          overwrite: tool.schema
-            .boolean()
-            .optional()
-            .describe("Overwrite if a provider with this ID already exists (default: false)"),
+          "models.dev metadata, and saves the provider so it loads on every startup.",
+        input: ADD_PROVIDER_INPUT,
+        async execute(input) {
+          const result = await addManagedProvider(input as AddProviderParams)
+          return { content: result.message }
         },
-        async execute(args) {
-          const { data: config } = await client.config.get()
-          const providers = (config?.provider as Record<string, ProviderConfig>) ?? {}
+      })
+    })
 
-          const validationError = validateAddProviderParams(args, providers)
-          if (validationError) return validationError
-
-          const result = await addProvider(args)
-          if (!result.success || !result.providerEntry) return result.message
-
-          await persistProviderApiKey(
-            result.providerEntry,
-            args.providerId,
-            args.apiKey,
-            async (id, key) => {
-              await client.auth.set({ path: { id }, body: { type: "api", key } })
-              return true
-            },
-          )
-
-          providers[args.providerId] = result.providerEntry
-          await client.config.update({
-            body: { provider: providers } as never,
-          })
-
-          return result.message
-        },
-      }),
-    },
-  }
-}
-
-export default { id, server }
+    await ctx.rpc.register(DynamicProviders, {
+      providers: async () => {
+        const providers = await ctx.provider.list()
+        return { ids: [...new Set([...providers.data.map((p) => p.id as string), ...knownProviderIds()])] }
+      },
+      reload: async () => reloadModels(),
+      addProvider: async (input) => {
+        const result = await addManagedProvider(input as AddProviderParams)
+        return { success: result.success, message: result.message }
+      },
+    })
+  },
+})

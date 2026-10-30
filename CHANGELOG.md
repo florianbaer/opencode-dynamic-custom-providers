@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-10-30
+
+### Changed
+- **Breaking:** ported to the OpenCode V2 plugin API (`@opencode/plugin`). OpenCode V1 users should stay on 2.x
+- Discovered models are injected with `ctx.provider.transform` instead of the V1 `config` hook, and discovery runs in the background rather than blocking startup
+- Providers are read from V2 config (`providers.<id>.settings.baseURL`, `settings.apiKey`, `headers`)
+- `dynamic` and `displayStyle` moved from the provider config to the plugin options (`options.providers.<id>`)
+- Providers added with `/add-provider` or the `add-provider` tool are saved in plugin storage, because V2 plugins can't write config
+- The TUI commands call the server part over a typed RPC contract (exported as `opencode-dynamic-custom-providers/rpc`)
+- Install with `opencode plugin add opencode-dynamic-custom-providers`
+
 ## [2.2.0] - 2026-05-23
 
 ### Added
