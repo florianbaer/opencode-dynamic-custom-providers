@@ -73,71 +73,43 @@ export default Plugin.define({
     // Discovered models per provider. Transforms must be synchronous, so
     // discovery runs outside them and calls reload() when it has results.
     const discovered = new Map<string, Model.Info[]>()
-    // Providers from the user's config, as first seen in the effective list.
-    // Config is layered on after plugin transforms, so the transform can't
-    // see them and has to add them itself once they have models.
-    const configProviders = new Map<string, Provider.Info>()
+    // Providers we already tried, so a replayed transform doesn't rediscover.
+    const attempted = new Set<string>()
+    let configTargets: DiscoveryTarget[] = []
+    // Providers defined in the user's config never appear in the editor, so
+    // they are read from the provider API instead and injected when discovered.
+    const catalogIds = new Set<string>()
+    const configOnly = new Map<string, { info: Provider.Info; target: DiscoveryTarget }>()
 
-    const configTargets = async (): Promise<DiscoveryTarget[]> => {
-      const where = { location: { directory: ctx.location.directory } }
-      const [providers, models] = await Promise.all([ctx.provider.list(where), ctx.model.list(where)])
-      const counts = new Map<string, number>()
-      for (const m of models.data) counts.set(m.providerID, (counts.get(m.providerID) ?? 0) + 1)
-
-      const targets: DiscoveryTarget[] = []
-      for (const info of providers.data as unknown as Provider.Info[]) {
-        if (managed.has(info.id)) continue
-        // Models we injected ourselves don't count as models from config.
-        const ownModels = discovered.has(info.id) ? 0 : counts.get(info.id) ?? 0
-        const target = targetFromProvider(info, ownModels, options)
-        if (!target) continue
-        targets.push(target)
-        if (!configProviders.has(info.id)) configProviders.set(info.id, info)
-      }
-      return targets
-    }
-
-    const allTargets = async (): Promise<DiscoveryTarget[]> => [
-      ...(await configTargets()),
+    const allTargets = (): DiscoveryTarget[] => [
+      ...configTargets,
+      ...[...configOnly.values()].map((c) => c.target),
       ...[...managed.values()].map(targetFromManaged),
     ]
 
-    // Coalesces reloads, so each provider shows up as soon as it answers
-    // without one slow endpoint holding back the rest.
-    let reloading: Promise<void> | null = null
-    let reloadAgain = false
-    const scheduleReload = (): Promise<void> => {
-      if (reloading) {
-        reloadAgain = true
-        return reloading
-      }
-      reloading = (async () => {
-        do {
-          reloadAgain = false
-          await ctx.provider.reload()
-        } while (reloadAgain)
-      })().finally(() => {
-        reloading = null
-      })
-      return reloading
-    }
-
     const refresh = async (targets: DiscoveryTarget[], clearCache: boolean) => {
+      for (const t of targets) attempted.add(t.id)
       const result = await reloadAllProviders(
         targets,
         discovered,
-        (providerId, models) => {
-          discovered.set(providerId, toModelInfos(providerId, models))
-          void scheduleReload()
-        },
+        (providerId, models) => discovered.set(providerId, toModelInfos(providerId, models)),
         { clearCache },
       )
-      if (reloading) await reloading
+      if (result.totalModels > 0) await ctx.provider.reload()
       for (const e of result.errors) console.warn(`[${PLUGIN_ID}] ${e}`)
       return result
     }
 
     await ctx.provider.transform((editor) => {
+      const targets: DiscoveryTarget[] = []
+      for (const record of editor.list()) {
+        catalogIds.add(record.provider.id)
+        if (managed.has(record.provider.id)) continue
+        const target = targetFromProvider(record.provider, record.models.size, options)
+        if (target) targets.push(target)
+      }
+      configTargets = targets
+
       for (const provider of managed.values()) {
         if (editor.get(provider.id)) editor.remove(provider.id)
         editor.add({ info: managedProviderInfo(provider), models: discovered.get(provider.id) ?? [] })
@@ -146,69 +118,63 @@ export default Plugin.define({
       for (const [providerId, models] of discovered) {
         if (managed.has(providerId)) continue
         const record = editor.get(providerId)
-        if (record) {
-          if (!record.provider.package) {
-            editor.update(providerId, (p) => {
-              p.package = OPENAI_COMPATIBLE_PACKAGE
-            })
-          }
-          editor.models.set(providerId, models)
+        const external = configOnly.get(providerId)
+        if (!record && external) {
+          editor.add({
+            info: { ...external.info, package: external.info.package ?? OPENAI_COMPATIBLE_PACKAGE } as Provider.Info,
+            models,
+          })
           continue
         }
-        const info = configProviders.get(providerId)
-        if (info) {
-          editor.add({ info: { ...info, package: info.package || OPENAI_COMPATIBLE_PACKAGE }, models })
+        if (!record) continue
+        if (!record.provider.package) {
+          editor.update(providerId, (p) => {
+            p.package = OPENAI_COMPATIBLE_PACKAGE
+          })
         }
+        editor.models.set(providerId, models)
+      }
+
+      const pending = allTargets().filter((t) => !t.hasModels && !attempted.has(t.id))
+      if (pending.length > 0) {
+        for (const t of pending) attempted.add(t.id)
+        queueMicrotask(() => {
+          refresh(pending, false).catch((error) =>
+            console.warn(`[${PLUGIN_ID}] Discovery failed: ${sanitizeErrorMessage(error)}`),
+          )
+        })
       }
     })
 
-    const reloadModels = async () => refresh(await allTargets(), true)
-
-    // Config providers aren't loaded yet while setup runs, so discovery is
-    // driven by provider/config events. Each provider is discovered once;
-    // later rounds go through refresh-models or /reload-models.
-    const attempted = new Set<string>()
-    let scanning = false
-    let scanAgain = false
-    const discoverNew = async () => {
-      if (scanning) {
-        scanAgain = true
-        return
+    const loadConfigProviders = async () => {
+      const listed = await ctx.provider.list()
+      const found: DiscoveryTarget[] = []
+      for (const info of listed.data as unknown as Provider.Info[]) {
+        if (catalogIds.has(info.id) || managed.has(info.id) || configOnly.has(info.id)) continue
+        const target = targetFromProvider(info, 0, options)
+        if (!target) continue
+        configOnly.set(info.id, { info, target })
+        found.push(target)
       }
-      scanning = true
-      try {
-        do {
-          scanAgain = false
-          const pending = (await allTargets()).filter((t) => !t.hasModels && !attempted.has(t.id))
-          if (pending.length === 0) continue
-          for (const t of pending) attempted.add(t.id)
-          await refresh(pending, false)
-        } while (scanAgain)
-      } catch (error) {
-        console.warn(`[${PLUGIN_ID}] Discovery failed: ${sanitizeErrorMessage(error)}`)
-      } finally {
-        scanning = false
-      }
+      const pending = found.filter((t) => !attempted.has(t.id))
+      if (pending.length > 0) await refresh(pending, false)
     }
 
-    const events = new AbortController()
-    void (async () => {
+    // The config layer loads after plugins start, so keep looking for a short while.
+    const scanConfigProviders = async (attempt = 0): Promise<void> => {
       try {
-        for await (const _ of ctx.event.subscribe({
-          types: ["provider.updated", "config.updated"],
-          signal: events.signal,
-        })) {
-          void discoverNew()
-        }
+        await loadConfigProviders()
       } catch (error) {
-        if (!events.signal.aborted) {
-          console.warn(`[${PLUGIN_ID}] Event stream failed: ${sanitizeErrorMessage(error)}`)
-        }
+        console.warn(`[${PLUGIN_ID}] Discovery failed: ${sanitizeErrorMessage(error)}`)
       }
-    })()
-    setTimeout(() => void discoverNew(), 0)
+      if (attempt < 6) setTimeout(() => void scanConfigProviders(attempt + 1), 1000 * 2 ** attempt)
+    }
+    queueMicrotask(() => void scanConfigProviders())
 
-    const knownProviderIds = () => new Set([...configProviders.keys(), ...managed.keys()])
+    const reloadModels = () => refresh(allTargets(), true)
+
+    const knownProviderIds = () =>
+      new Set([...configTargets.map((t) => t.id), ...managed.keys()])
 
     const addManagedProvider = async (params: AddProviderParams): Promise<AddProviderResult> => {
       const providers = await ctx.provider.list()
@@ -221,6 +187,7 @@ export default Plugin.define({
 
       await ctx.storage.set(STORAGE_PREFIX + result.provider.id, result.provider as never)
       managed.set(result.provider.id, result.provider)
+      attempted.add(result.provider.id)
       discovered.set(result.provider.id, toModelInfos(result.provider.id, result.models))
       await ctx.provider.reload()
       return result
@@ -264,7 +231,5 @@ export default Plugin.define({
         return { success: result.success, message: result.message }
       },
     })
-
-    return () => events.abort()
   },
 })
