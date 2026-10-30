@@ -41,6 +41,19 @@ test("targetFromProvider skips providers without a valid baseURL", () => {
   )
 })
 
+test("targetFromProvider skips catalog providers unless opted in", () => {
+  const info = {
+    id: "perplexity",
+    name: "Perplexity",
+    activation: "auto",
+    package: OPENAI_COMPATIBLE_PACKAGE,
+    integrationID: "perplexity",
+    settings: { baseURL: "https://api.perplexity.ai" },
+  }
+  assert.strictEqual(targetFromProvider(info, 0, {}), null)
+  assert.strictEqual(targetFromProvider(info, 0, { providers: { perplexity: { dynamic: true } } }).id, "perplexity")
+})
+
 test("targetFromProvider honours per-provider plugin options", () => {
   const info = {
     id: "p",

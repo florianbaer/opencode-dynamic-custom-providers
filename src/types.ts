@@ -62,6 +62,9 @@ export function targetFromProvider(
   if (!baseURL || !isValidUrl(baseURL)) return null
 
   const providerOptions = options.providers?.[info.id] ?? {}
+  // Catalog providers (backed by an integration) are only probed when the
+  // user opts in; otherwise every inactive catalog entry would be fetched.
+  if (info.integrationID && providerOptions.dynamic !== true) return null
   return {
     id: info.id,
     baseURL,

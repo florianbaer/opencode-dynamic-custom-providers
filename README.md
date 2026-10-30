@@ -31,7 +31,7 @@ Or add it to `opencode.jsonc` by hand:
 ## Features
 
 ### 1. Automatic model discovery
-On every startup the server plugin fetches `/models` from each provider that has a `settings.baseURL`. Discovery runs in the background, so it doesn't block startup. Models show up as soon as each endpoint answers. When the config changes and a new provider appears, the plugin discovers its models too.
+On every startup the server plugin fetches `/models` from each provider you configured with a `settings.baseURL`. Discovery runs in the background, so it doesn't block startup. Models show up as soon as each endpoint answers. When the config changes and a new provider appears, the plugin discovers its models too.
 
 ### 2. models.dev metadata enrichment
 Each discovered model is matched against the [models.dev](https://models.dev) catalog. A match adds the model's context window, output limit, cost, tool calling and temperature support, and input/output modalities.
@@ -106,9 +106,11 @@ A key entered in `/add-provider` is stored in the plugin's storage and passed to
 
 ## Discovery trigger
 
-A provider is eligible for discovery when it has a valid `settings.baseURL` and either:
-- has no models of its own (no `models` in config, and no models.dev catalog entry), **or**
+A provider you define under `providers` is eligible for discovery when it has a valid `settings.baseURL` and either:
+- has no `models` of its own in config, **or**
 - has `"dynamic": true` in the plugin options
+
+OpenCode's built-in catalog providers (such as `openai` or `perplexity`) are never probed unless you set `"dynamic": true` for them in the plugin options.
 
 ## Migrating from V1 (2.x)
 
