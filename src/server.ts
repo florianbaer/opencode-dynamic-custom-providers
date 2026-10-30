@@ -121,7 +121,7 @@ export default Plugin.define({
         const external = configOnly.get(providerId)
         if (!record && external) {
           editor.add({
-            info: { ...external.info, package: external.info.package ?? OPENAI_COMPATIBLE_PACKAGE } as Provider.Info,
+            info: { ...external.info, package: external.info.package || OPENAI_COMPATIBLE_PACKAGE } as Provider.Info,
             models,
           })
           continue
