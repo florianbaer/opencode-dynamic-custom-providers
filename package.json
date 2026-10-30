@@ -23,8 +23,8 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "test": "npm run build && node --test tests/*.test.mjs",
+    "compile": "tsc",
+    "test": "npm run compile && node --test tests/*.test.mjs",
     "prepublishOnly": "npm test"
   },
   "keywords": [
