@@ -25,7 +25,6 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "prepare": "npm run build",
     "prepublishOnly": "npm test"
   },
   "keywords": [
@@ -45,6 +44,11 @@
   },
   "peerDependencies": {
     "@opencode/plugin": "^2.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@opencode/plugin": "^2.2.2",

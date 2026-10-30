@@ -137,6 +137,8 @@ npm install
 npm test
 ```
 
+`dist/` is checked in so that installing from Git needs no build step. Run `npm run build` and commit `dist/` together with any change to `src/`.
+
 To try a local checkout, build it and add its path to `plugins`:
 
 ```jsonc
