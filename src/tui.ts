@@ -1,202 +1,123 @@
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
+import { Plugin } from "@opencode/plugin/tui"
 import type { DisplayStyle } from "./discovery.js"
-import type { ProviderConfig } from "./types.js"
-import {
-  reloadAllProviders,
-  addProvider,
-  validateAddProviderParams,
-  validateProviderId,
-  persistProviderApiKey,
-} from "./commands.js"
+import { validateProviderId, type ReloadResult } from "./commands.js"
+import { DynamicProviders } from "./rpc.js"
+import { isValidUrl } from "./security.js"
+import { PLUGIN_ID } from "./types.js"
 
-export const id = "opencode-dynamic-custom-providers"
+export default Plugin.define({
+  id: `${PLUGIN_ID}.tui`,
+  setup(context) {
+    const server = context.client.rpc(DynamicProviders)
+    const toast = context.ui.toast
+    const dialog = context.ui.dialog
 
-function showPrompt(api: TuiPluginApi, title: string, placeholder?: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    api.ui.dialog.replace(
-      () =>
-        api.ui.DialogPrompt({
-          title,
-          placeholder,
-          onConfirm: (value: string) => resolve(value),
-          onCancel: () => resolve(null),
-        }),
-      () => resolve(null),
-    )
-  })
-}
+    const reloadModels = async () => {
+      toast.show({ message: "Reloading models from dynamic providers...", variant: "info" })
 
-function showConfirm(api: TuiPluginApi, title: string, message: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    api.ui.dialog.replace(
-      () =>
-        api.ui.DialogConfirm({
-          title,
-          message,
-          onConfirm: () => resolve(true),
-          onCancel: () => resolve(false),
-        }),
-      () => resolve(false),
-    )
-  })
-}
+      const result = (await server.reload({})) as ReloadResult
 
-function showSelect<V>(
-  api: TuiPluginApi,
-  title: string,
-  options: Array<{ title: string; value: V; description?: string }>,
-): Promise<V | null> {
-  return new Promise((resolve) => {
-    api.ui.dialog.replace(
-      () =>
-        api.ui.DialogSelect({
-          title,
-          options: options.map((o) => ({
-            ...o,
-            onSelect: () => resolve(o.value),
-          })),
-        }),
-      () => resolve(null),
-    )
-  })
-}
+      if (result.providerCount === 0) {
+        toast.show({ message: "No dynamic providers configured.", variant: "warning" })
+        return
+      }
+      for (const w of result.warnings) toast.show({ message: w, variant: "warning" })
+      for (const e of result.errors) toast.show({ message: e, variant: "error" })
 
-export const tui: TuiPlugin = async (api: TuiPluginApi) => {
-  api.command?.register(() => [
-    {
-      title: "Reload Models",
-      value: "reload-models",
-      description: "Re-discover models from all dynamic providers without restarting",
-      slash: {
-        name: "reload-models",
-        aliases: ["refresh-models"],
-      },
-      onSelect: async () => {
-        const { data: config } = await api.client.config.get()
-        const providers = (config?.provider as Record<string, ProviderConfig>) ?? {}
-
-        const result = await reloadAllProviders(providers)
-
-        if (result.providerCount === 0) {
-          api.ui.toast({ message: "No dynamic providers configured.", variant: "warning" })
-          return
-        }
-
-        api.ui.toast({
-          message: `Reloading models from ${result.providerCount} provider(s)...`,
-          variant: "info",
+      if (result.failures === 0) {
+        toast.show({
+          message: `Reloaded ${result.totalModels} model(s) from ${result.providerCount} provider(s).`,
+          variant: "success",
         })
+      } else if (result.totalModels > 0) {
+        toast.show({
+          message: `Reloaded ${result.totalModels} model(s) with ${result.failures} failure(s). Check provider URLs/keys.`,
+          variant: "warning",
+        })
+      }
+    }
 
-        for (const w of result.warnings) {
-          api.ui.toast({ message: w, variant: "warning" })
-        }
-        for (const e of result.errors) {
-          api.ui.toast({ message: e, variant: "error" })
-        }
+    const addProviderWizard = async () => {
+      const rawProviderId = await dialog.prompt({
+        title: "Provider ID",
+        placeholder: "e.g., my-proxy (alphanumeric only)",
+      })
+      if (!rawProviderId) return
 
-        if (result.totalModels > 0) {
-          await api.client.config.update({ config: { provider: providers } as never })
-        }
+      const providerId = rawProviderId.trim()
+      const idError = validateProviderId(providerId)
+      if (idError) {
+        toast.show({ message: idError, variant: "error" })
+        return
+      }
 
-        if (result.failures === 0) {
-          api.ui.toast({
-            message: `Reloaded ${result.totalModels} model(s) from ${result.providerCount} provider(s).`,
-            variant: "success",
-          })
-        } else if (result.totalModels > 0) {
-          api.ui.toast({
-            message: `Reloaded ${result.totalModels} model(s) with ${result.failures} failure(s). Check provider URLs/keys.`,
-            variant: "warning",
-          })
-        }
-      },
-    },
-    {
-      title: "Add Provider",
-      value: "add-provider",
-      description: "Add a new OpenAI-compatible custom provider with dynamic model discovery",
-      slash: {
-        name: "add-provider",
-      },
-      onSelect: async () => {
-        const rawProviderId = await showPrompt(api, "Provider ID", "e.g., my-proxy (alphanumeric only)")
-        if (!rawProviderId) return
+      const { ids } = (await server.providers({})) as { ids: string[] }
+      let overwrite = false
+      if (ids.includes(providerId)) {
+        overwrite = (await dialog.confirm({
+          title: "Provider already exists",
+          message: `A provider with ID '${providerId}' already exists. Overwrite it?`,
+        })) === true
+        if (!overwrite) return
+      }
 
-        const providerId = rawProviderId.trim()
-        const idError = validateProviderId(providerId)
-        if (idError) {
-          api.ui.toast({ message: idError, variant: "error" })
-          return
-        }
+      const rawBaseURL = await dialog.prompt({ title: "Base URL", placeholder: "https://api.example.com/v1" })
+      if (!rawBaseURL) return
+      const baseURL = rawBaseURL.trim()
+      if (!isValidUrl(baseURL)) {
+        toast.show({ message: "Invalid Base URL. Please enter a full URL (including https://).", variant: "error" })
+        return
+      }
 
-        const { data: config } = await api.client.config.get()
-        const providers = (config?.provider as Record<string, ProviderConfig>) ?? {}
+      const rawApiKey = await dialog.prompt({ title: "API Key (Optional)", placeholder: "sk-..." })
+      const apiKey = rawApiKey?.trim() || undefined
 
-        let overwrite = false
-        if (providers[providerId]) {
-          overwrite = await showConfirm(
-            api,
-            "Provider already exists",
-            `A provider with ID '${providerId}' already exists. Overwrite it?`,
-          )
-          if (!overwrite) return
-        }
+      const displayStyle = await dialog.select<DisplayStyle>({
+        title: "Model Display Names",
+        options: [
+          { title: "Full Slug", value: "slug", description: "vertex/gemini-3.1-pro (best for proxies)" },
+          { title: "Friendly Name", value: "name", description: "Gemini 3.1 Pro (may be ambiguous)" },
+        ],
+      })
+      if (!displayStyle) return
 
-        const rawBaseURL = await showPrompt(api, "Base URL", "https://api.example.com/v1")
-        if (!rawBaseURL) return
+      toast.show({ message: `Discovering models from ${baseURL}...`, variant: "info" })
 
-        const baseURL = rawBaseURL.trim()
+      const result = (await server.addProvider({
+        providerId,
+        baseURL,
+        displayStyle,
+        overwrite,
+        ...(apiKey ? { apiKey } : {}),
+      })) as { success: boolean; message: string }
 
-        const rawApiKey = await showPrompt(api, "API Key (Optional)", "sk-...")
-        const apiKey = rawApiKey?.trim() || undefined
+      toast.show({ message: result.message, variant: result.success ? "success" : "warning" })
+    }
 
-        const displayStyle = await showSelect<DisplayStyle>(api, "Model Display Names", [
-          {
-            title: "Full Slug",
-            value: "slug",
-            description: "vertex/gemini-3.1-pro (best for proxies)",
-          },
-          {
-            title: "Friendly Name",
-            value: "name",
-            description: "Gemini 3.1 Pro (may be ambiguous)",
-          },
-        ])
-        if (!displayStyle) return
+    const handleError = (error: unknown) => {
+      toast.show({ message: error instanceof Error ? error.message : String(error), variant: "error" })
+    }
 
-        const params = { providerId, baseURL, apiKey, displayStyle, overwrite }
-        const validationError = validateAddProviderParams(params, providers)
-        if (validationError) {
-          api.ui.toast({ message: validationError, variant: "error" })
-          return
-        }
-
-        api.ui.toast({ message: `Discovering models from ${baseURL}...`, variant: "info" })
-
-        const result = await addProvider(params)
-
-        if (!result.success || !result.providerEntry) {
-          api.ui.toast({ message: result.message, variant: "warning" })
-          return
-        }
-
-        await persistProviderApiKey(
-          result.providerEntry,
-          providerId,
-          apiKey,
-          async (id, key) => {
-            await api.client.auth.set({ providerID: id, auth: { type: "api", key } })
-            return true
-          },
-        )
-
-        providers[providerId] = result.providerEntry
-        await api.client.config.update({ config: { provider: providers } as never })
-
-        api.ui.toast({ message: result.message, variant: "success" })
-      },
-    },
-  ])
-}
-
-export default { id, tui }
+    context.keymap.layer(() => ({
+      mode: "global",
+      commands: [
+        {
+          id: `${PLUGIN_ID}.reload-models`,
+          title: "Reload Models",
+          description: "Re-discover models from all dynamic providers without restarting",
+          palette: true,
+          slash: { name: "reload-models", aliases: ["refresh-models"] },
+          run: () => reloadModels().catch(handleError),
+        },
+        {
+          id: `${PLUGIN_ID}.add-provider`,
+          title: "Add Provider",
+          description: "Add a new OpenAI-compatible custom provider with dynamic model discovery",
+          palette: true,
+          slash: { name: "add-provider" },
+          run: () => addProviderWizard().catch(handleError),
+        },
+      ],
+    }))
+  },
+})

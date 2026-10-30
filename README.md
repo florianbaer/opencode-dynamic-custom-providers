@@ -1,65 +1,65 @@
 # OpenCode Dynamic Custom Providers
 
-This plugin extends OpenCode with dynamic model discovery for OpenAI-compatible providers, enriched with metadata from [models.dev](https://models.dev).
+An [OpenCode V2](https://opencode.ai/v2/docs/) plugin that discovers models from OpenAI-compatible providers and adds metadata from [models.dev](https://models.dev).
 
-## Features
-
-### 1. Automatic Model Discovery at Startup
-The server plugin's `config` hook discovers models from any provider with a `baseURL` on every OpenCode startup. Models are always up-to-date without manual intervention.
-
-### 2. models.dev Metadata Enrichment
-Discovered models are cross-referenced against the [models.dev](https://models.dev) catalog (the same source OpenCode uses natively) to enrich them with accurate context windows, output limits, costs, capabilities (tool calling, reasoning, temperature), and input/output modalities.
-
-### 3. `/add-provider` Slash Command (TUI)
-An interactive TUI wizard for adding new providers:
-- Prompts for Provider ID, Base URL, and API Key
-- Validates inputs and checks for duplicates
-- Discovers models to confirm the endpoint works before saving
-- Writes `dynamic: true` so models are re-discovered on each startup
-
-### 4. `/reload-models` Slash Command (TUI)
-A TUI slash command (also available as `/refresh-models`) that re-discovers models from all providers with a `baseURL` without restarting OpenCode. Clears the models.dev cache and updates the live config in one step.
-
-### 5. `add-provider` Agent Tool (Web / Desktop / TUI)
-A server-side tool the AI agent can call to add a new provider programmatically. Works in all interfaces (web, desktop, and TUI). Accepts provider ID, base URL, API key, and display style as arguments, validates the endpoint, discovers models, and persists the provider config.
-
-### 6. `refresh-models` Agent Tool (Web / Desktop / TUI)
-A server-side tool the AI agent can call to re-discover models from all dynamic providers and update the live config. Clears the models.dev metadata cache, fetches `/models` from every provider with a baseURL, enriches them, and persists the updated config. Works in all interfaces without restarting.
+> **OpenCode V1?** Version 3.x supports only OpenCode V2. On OpenCode V1 (`1.x`), stay on `opencode-dynamic-custom-providers@2`.
 
 ## Installation
 
 ```bash
-opencode plugin opencode-dynamic-custom-providers
+opencode plugin add opencode-dynamic-custom-providers
 ```
 
-### Alternative: Install from GitHub
+That's all. The package has a server part, which handles discovery, tools and storage, and a TUI part, which adds the slash commands. OpenCode loads both from the one entry.
+
+### Alternatives
+
+Install straight from GitHub:
+
 ```bash
-opencode plugin git+ssh://git@github.com/b3nw/opencode-dynamic-custom-providers.git
+opencode plugin add git+https://github.com/jhabr/opencode-dynamic-custom-providers.git
 ```
 
-### Alternative: Local Clone (for Development)
-```bash
-git clone https://github.com/b3nw/opencode-dynamic-custom-providers
-opencode plugin ./opencode-dynamic-custom-providers
+Or add it to `opencode.jsonc` by hand:
+
+```jsonc
+{
+  "plugins": ["opencode-dynamic-custom-providers"]
+}
 ```
+
+## Features
+
+### 1. Automatic model discovery
+On every startup the server plugin fetches `/models` from each provider that has a `settings.baseURL`. Discovery runs in the background, so it doesn't block startup. Models show up as soon as each endpoint answers. When the config changes and a new provider appears, the plugin discovers its models too.
+
+### 2. models.dev metadata enrichment
+Each discovered model is matched against the [models.dev](https://models.dev) catalog. A match adds the model's context window, output limit, cost, tool calling and temperature support, and input/output modalities.
+
+### 3. `/add-provider` slash command (TUI)
+An interactive wizard that adds a provider:
+- Prompts for a provider ID, base URL, API key and display style
+- Validates the input and checks for duplicates
+- Discovers models to confirm the endpoint works before saving
+
+### 4. `/reload-models` slash command (TUI)
+Re-discovers models from every dynamic provider without restarting OpenCode. It is also available as `/refresh-models`.
+
+### 5. `add-provider` and `refresh-models` agent tools
+Server-side tools the agent can call from any client (TUI, web or desktop). For example: *"Add an OpenAI-compatible provider called my-proxy at https://api.proxy.com/v1 with API key sk-..."*
 
 ## Configuration
 
-### Adding a Provider via TUI
-Run `/add-provider` in the OpenCode TUI and follow the interactive prompts. The provider will be added with `dynamic: true` so models are discovered automatically on each startup.
+### Adding a provider in config
+Add a provider with a `settings.baseURL`, and its models are discovered automatically:
 
-### Adding a Provider via the Agent (Web / Desktop)
-Ask the AI agent to add a provider. The agent will use the `add-provider` tool with the parameters you provide. For example: *"Add an OpenAI-compatible provider called my-proxy at https://api.proxy.com/v1 with API key sk-..."*
-
-### Adding a Provider Manually
-Add a provider to `opencode.json` with a `baseURL`. Models will be discovered automatically:
-
-```json
+```jsonc
 {
-  "provider": {
+  "providers": {
     "my-proxy": {
       "name": "My Proxy",
-      "options": {
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
         "baseURL": "https://api.proxy.com/v1"
       }
     }
@@ -67,72 +67,82 @@ Add a provider to `opencode.json` with a `baseURL`. Models will be discovered au
 }
 ```
 
-For explicit opt-in, set `"dynamic": true`:
+If you leave out `package`, the plugin sets `@opencode/ai/providers/openai-compatible`. Extra request headers in `headers` are also sent on the discovery request.
 
-```json
+### Providers added with `/add-provider` or the tool
+V2 plugins can't write `opencode.json`. The plugin saves these providers in its own plugin storage instead, and restores them on every startup.
+
+### Plugin options
+V2 config only accepts its own keys under `providers`. Settings that belong to this plugin (the V1 `dynamic` and `displayStyle` keys) therefore go in the plugin options:
+
+```jsonc
 {
-  "provider": {
-    "my-proxy": {
-      "name": "My Proxy",
-      "dynamic": true,
+  "plugins": [
+    {
+      "package": "opencode-dynamic-custom-providers",
       "options": {
-        "baseURL": "https://api.proxy.com/v1"
+        // Default for every provider: "slug" (full model ID) or "name" (friendly name)
+        "displayStyle": "slug",
+        "providers": {
+          // Merge discovered models even though this provider defines its own
+          "my-proxy": { "dynamic": true, "displayStyle": "name" }
+        }
       }
     }
-  }
+  ]
 }
 ```
 
-### API Key Authentication
+### API keys
+The discovery request authenticates with, in order:
 
-API keys can be set in three ways:
-
-1. **Via the `/add-provider` TUI command** (stored securely via OpenCode's auth system)
-2. **In config** under `options.apiKey`:
-   ```json
-   {
-     "provider": {
-       "my-proxy": {
-         "options": {
-           "baseURL": "https://api.proxy.com/v1",
-           "apiKey": "sk-..."
-         }
-       }
-     }
-   }
-   ```
-3. **Via environment variable** using the pattern `OPENCODE_LOCAL_<PROVIDER_ID>_API_KEY`:
+1. `settings.apiKey` in the provider config, or the key entered in `/add-provider`
+2. The environment variable `OPENCODE_LOCAL_<PROVIDER_ID>_API_KEY`, for example:
    ```bash
    export OPENCODE_LOCAL_MY_PROXY_API_KEY=sk-...
    ```
 
-## How It Works
+A key entered in `/add-provider` is stored in the plugin's storage and passed to the provider as `settings.apiKey`.
 
-1. On startup, the server plugin's `config` hook iterates all providers with a `baseURL`
-2. For each eligible provider (no models defined, or `dynamic: true`), it fetches `/v1/models`
-3. Each discovered model ID is cross-referenced against the models.dev catalog
-4. Matching models get enriched metadata (context window, costs, capabilities, modalities)
-5. Enriched models are injected into the live config before OpenCode loads providers
-6. The provider is set to use `@ai-sdk/openai-compatible` as the SDK package
+## Discovery trigger
 
-## Discovery Trigger
+A provider is eligible for discovery when it has a valid `settings.baseURL` and either:
+- has no models of its own (no `models` in config, and no models.dev catalog entry), **or**
+- has `"dynamic": true` in the plugin options
 
-A provider is eligible for discovery when it has `options.baseURL` and either:
-- Has `dynamic: true` set in config, **or**
-- Has no `models` key (or empty models) in config
+## Migrating from V1 (2.x)
 
-Providers that already have models defined in config are left unchanged unless `dynamic: true` is set.
+| V1 (`opencode.json`) | V2 |
+| --- | --- |
+| `"plugin": ["opencode-dynamic-custom-providers"]` | `opencode plugin add opencode-dynamic-custom-providers` |
+| `provider.<id>` | `providers.<id>` |
+| `options.baseURL` / `options.apiKey` | `settings.baseURL` / `settings.apiKey` |
+| `options.headers` | `headers` |
+| `npm: "@ai-sdk/openai-compatible"` | `package: "@opencode/ai/providers/openai-compatible"` (set automatically) |
+| `dynamic`, `displayStyle` on the provider | plugin options `providers.<id>.dynamic` / `.displayStyle` |
+
+Providers that V1's `/add-provider` wrote into `opencode.json` include a static `models` list. After you migrate the config, either delete that list or set `"dynamic": true` for the provider in the plugin options, so its models keep refreshing.
 
 ## Limitations
-- **Startup latency**: Each dynamic provider adds a network request at startup (15s timeout per endpoint, plus models.dev fetch on first run)
-- **models.dev coverage**: Models not in the models.dev catalog get sensible defaults (128k context window, 4096 output limit, text-only modalities)
-- **Capabilities detection**: Endpoint-reported capabilities (`supported_parameters`, `capabilities`) are merged with models.dev data; neither source alone is complete for all proxies
+- **models.dev coverage**: models missing from the catalog get defaults: a 128k context window, a 4096-token output limit, text-only modalities and no tool calling.
+- **Reasoning variants**: V2 builds reasoning-effort variants from config. Discovered models don't get variants yet.
+- **Capability detection**: capabilities the endpoint reports (`supported_parameters`, `capabilities`) are merged with models.dev data. Neither source is complete for every proxy.
 
 ## Development
 
 ```bash
-git clone https://github.com/b3nw/opencode-dynamic-custom-providers
+git clone https://github.com/jhabr/opencode-dynamic-custom-providers
 cd opencode-dynamic-custom-providers
 npm install
-npm run build
+npm test
+```
+
+`dist/` is checked in so that installing from Git needs no build step. Run `npm run build` and commit `dist/` together with any change to `src/`.
+
+To try a local checkout, build it and add its path to `plugins`:
+
+```jsonc
+{
+  "plugins": ["/path/to/opencode-dynamic-custom-providers"]
+}
 ```

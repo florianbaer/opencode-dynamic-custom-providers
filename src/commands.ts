@@ -1,6 +1,6 @@
-import { discoverAndEnrich, clearModelsDevCache, type DisplayStyle } from "./discovery.js"
+import { discoverAndEnrich, clearModelsDevCache, type DisplayStyle, type EnrichedModel } from "./discovery.js"
 import { isValidUrl, sanitizeErrorMessage } from "./security.js"
-import { getApiKey, getHeaders, shouldDiscover, type ProviderConfig } from "./types.js"
+import type { DiscoveryTarget, ManagedProvider } from "./types.js"
 
 export interface ReloadResult {
   totalModels: number
@@ -12,29 +12,26 @@ export interface ReloadResult {
 
 interface ProviderReloadOutcome {
   providerId: string
-  models: Record<string, unknown> | null
+  models: Record<string, EnrichedModel> | null
   warning?: string
   error?: string
 }
 
 async function reloadOneProvider(
-  providerId: string,
-  providerConfig: ProviderConfig,
+  target: DiscoveryTarget,
+  hadModels: boolean,
 ): Promise<ProviderReloadOutcome> {
-  const baseURL = providerConfig.options!.baseURL!
-  const apiKey = getApiKey(providerConfig, providerId)
-  const extraHeaders = getHeaders(providerConfig)
-  const displayStyle: DisplayStyle = providerConfig.displayStyle ?? "slug"
+  const providerId = target.id
 
   try {
-    const models = await discoverAndEnrich(baseURL, apiKey, displayStyle, extraHeaders)
+    const models = await discoverAndEnrich(target.baseURL, target.apiKey, target.displayStyle, target.headers)
     const count = Object.keys(models).length
 
     if (count > 0) {
       return { providerId, models }
     }
 
-    if (providerConfig.models && Object.keys(providerConfig.models).length > 0) {
+    if (hadModels) {
       return {
         providerId,
         models: null,
@@ -52,27 +49,31 @@ async function reloadOneProvider(
   }
 }
 
+// Discovers models for every target that has no models of its own.
+// `previous` holds the models discovered last time, so a provider that
+// suddenly returns nothing keeps them.
 export async function reloadAllProviders(
-  providers: Record<string, ProviderConfig>,
+  targets: DiscoveryTarget[],
+  previous: ReadonlyMap<string, unknown>,
+  onModels: (providerId: string, models: Record<string, EnrichedModel>) => void,
+  options: { clearCache?: boolean } = {},
 ): Promise<ReloadResult> {
-  const dynamicProviders = Object.entries(providers).filter(
-    ([, p]) => shouldDiscover(p),
-  )
+  const dynamicTargets = targets.filter((t) => !t.hasModels)
 
   const result: ReloadResult = {
     totalModels: 0,
     failures: 0,
-    providerCount: dynamicProviders.length,
+    providerCount: dynamicTargets.length,
     warnings: [],
     errors: [],
   }
 
-  if (dynamicProviders.length === 0) return result
+  if (dynamicTargets.length === 0) return result
 
-  clearModelsDevCache()
+  if (options.clearCache) clearModelsDevCache()
 
   const outcomes = await Promise.allSettled(
-    dynamicProviders.map(([id, cfg]) => reloadOneProvider(id, cfg)),
+    dynamicTargets.map((t) => reloadOneProvider(t, previous.has(t.id))),
   )
 
   for (const outcome of outcomes) {
@@ -92,13 +93,28 @@ export async function reloadAllProviders(
     }
 
     if (models) {
-      const providerConfig = providers[providerId]
-      providerConfig.models = models
+      onModels(providerId, models)
       result.totalModels += Object.keys(models).length
     }
   }
 
   return result
+}
+
+export function formatReloadResult(result: ReloadResult): string {
+  if (result.providerCount === 0) {
+    return "No dynamic providers configured. Add a provider with a baseURL first."
+  }
+
+  const lines: string[] = []
+  if (result.failures === 0) {
+    lines.push(`Reloaded ${result.totalModels} model(s) from ${result.providerCount} provider(s).`)
+  } else {
+    lines.push(`Reloaded ${result.totalModels} model(s) with ${result.failures} failure(s).`)
+  }
+  for (const w of result.warnings) lines.push(`Warning: ${w}`)
+  for (const e of result.errors) lines.push(`Error: ${e}`)
+  return lines.join("\n")
 }
 
 export interface AddProviderParams {
@@ -113,7 +129,8 @@ export interface AddProviderResult {
   success: boolean
   modelCount: number
   message: string
-  providerEntry?: ProviderConfig
+  provider?: ManagedProvider
+  models?: Record<string, EnrichedModel>
 }
 
 export function validateProviderId(providerId: string): string | null {
@@ -125,14 +142,14 @@ export function validateProviderId(providerId: string): string | null {
 
 export function validateAddProviderParams(
   params: AddProviderParams,
-  existingProviders: Record<string, ProviderConfig>,
+  existingProviderIds: ReadonlySet<string>,
 ): string | null {
   const idError = validateProviderId(params.providerId)
   if (idError) return idError
   if (!isValidUrl(params.baseURL)) {
     return "Invalid Base URL. Please enter a full URL (including https://)."
   }
-  if (existingProviders[params.providerId] && !params.overwrite) {
+  if (existingProviderIds.has(params.providerId) && !params.overwrite) {
     return `A provider with ID '${params.providerId}' already exists. Set overwrite to true to replace it.`
   }
   return null
@@ -156,21 +173,20 @@ export async function addProvider(
       }
     }
 
-    const providerEntry: ProviderConfig = {
+    const provider: ManagedProvider = {
+      id: params.providerId,
       name: params.providerId,
-      npm: "@ai-sdk/openai-compatible",
-      api: baseURL,
-      options: { baseURL },
-      dynamic: true,
+      baseURL,
+      ...(params.apiKey ? { apiKey: params.apiKey } : {}),
       displayStyle,
-      models,
     }
 
     return {
       success: true,
       modelCount,
       message: `Provider '${params.providerId}' added with ${modelCount} model(s).`,
-      providerEntry,
+      provider,
+      models,
     }
   } catch (error) {
     return {
@@ -178,26 +194,5 @@ export async function addProvider(
       modelCount: 0,
       message: `Failed to discover models: ${sanitizeErrorMessage(error)}`,
     }
-  }
-}
-
-export type StoreApiKeyFn = (providerId: string, apiKey: string) => Promise<boolean>
-
-export async function persistProviderApiKey(
-  providerEntry: ProviderConfig,
-  providerId: string,
-  apiKey: string | undefined,
-  storeApiKey: StoreApiKeyFn,
-): Promise<void> {
-  if (!apiKey) return
-
-  let storedInAuthStore = false
-  try {
-    storedInAuthStore = await storeApiKey(providerId, apiKey)
-  } catch {
-    // Auth store unavailable — fall back to config
-  }
-  if (!storedInAuthStore) {
-    providerEntry.options!.apiKey = apiKey
   }
 }
