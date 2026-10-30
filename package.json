@@ -3,24 +3,15 @@
   "version": "3.0.0",
   "description": "Dynamic model discovery for OpenAI-compatible providers in OpenCode V2 with models.dev enrichment",
   "type": "module",
-  "main": "./dist/server.js",
-  "types": "./dist/server.d.ts",
+  "main": "./src/server.ts",
+  "types": "./src/server.ts",
   "files": [
-    "dist"
+    "src"
   ],
   "exports": {
-    ".": {
-      "types": "./dist/server.d.ts",
-      "default": "./dist/server.js"
-    },
-    "./tui": {
-      "types": "./dist/tui.d.ts",
-      "default": "./dist/tui.js"
-    },
-    "./rpc": {
-      "types": "./dist/rpc.d.ts",
-      "default": "./dist/rpc.js"
-    }
+    ".": "./src/server.ts",
+    "./tui": "./src/tui.ts",
+    "./rpc": "./src/rpc.ts"
   },
   "scripts": {
     "compile": "tsc",

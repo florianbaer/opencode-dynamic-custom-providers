@@ -137,9 +137,9 @@ npm install
 npm test
 ```
 
-`dist/` is checked in so that installing from Git needs no build step. Run `npm run compile` and commit `dist/` together with any change to `src/`.
+OpenCode loads the TypeScript sources in `src/` directly, so there's no build step. `npm test` compiles to a git-ignored `dist/` just to run the tests.
 
-To try a local checkout, build it and add its path to `plugins`:
+To try a local checkout, add its path to `plugins`:
 
 ```jsonc
 {
